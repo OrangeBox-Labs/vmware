@@ -142,7 +142,14 @@ format_time_decimal() {
 }
 
 log() {
-  echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+  # Si la salida NO es una terminal, eliminar códigos de color
+  if [ -t 1 ]; then
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+  else
+    # Eliminar códigos de color para el log
+    local clean_msg=$(echo -e "$1" | sed -E 's/\x1b\[[0-9;]*m//g')
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" | tee -a "$LOG_FILE"
+  fi
 }
 
 log_time() {
