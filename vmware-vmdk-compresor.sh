@@ -14,7 +14,7 @@
 #   ./vmdk_compressor.sh
 #
 # Descomprimir (manual):
-#   tar -xpf archivo.tar.gz
+#   pigz -dc archivo.tar.gz | tar -xpf -
 #
 # AUTOR: Felipe Román froman@orangebox.cl -OrangeBox-
 # FECHA: 2026-08-20
@@ -512,7 +512,7 @@ restore_vmdk() {
     return 0
   fi
 
-  if gzip -d -c "$compressed_file" 2>/dev/null | $TAR -xS --sparse -f -; then
+  if pigz -dc "$compressed_file" | $TAR -xpf - 2>/dev/null; then
     echo "✅ Restauración exitosa"
     return 0
   fi
