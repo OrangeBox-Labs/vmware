@@ -14,7 +14,7 @@
 #   ./vmdk_compressor.sh
 #
 # Descomprimir (manual):
-#   pigz -d -c archivo.tar.gz | tar -xS --sparse -f -
+#   tar -xpf archivo.tar.gz
 #
 # AUTOR: Felipe Román froman@orangebox.cl -OrangeBox-
 # FECHA: 2026-08-20
