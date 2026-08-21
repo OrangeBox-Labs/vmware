@@ -11,7 +11,7 @@
 #   MANEJA NOMBRES DE ARCHIVO CON ESPACIOS usando comillas y -f - en tar.
 #
 # USO:
-#   ./vmdk_compressor.sh
+#   ./vmware-vmdk-compressor.sh
 #
 # Descomprimir (manual):
 #   pigz -dc archivo.tar.gz | tar -xpf -
@@ -33,9 +33,6 @@ TAR=$(which tar)
 
 # Archivo de log principal (todo el proceso)
 LOG_FILE="/var/log/vmdk_compress.log"
-
-# Archivo de reporte (resumen final con fecha)
-REPORT_FILE="/var/log/vmdk_compress_report_$(date +%Y%m%d_%H%M%S).log"
 
 # Número de hilos de CPU para pigz (por defecto, usar todos los cores disponibles)
 NPROC=$(nproc 2>/dev/null || echo 4)
@@ -142,28 +139,17 @@ format_time_decimal() {
 }
 
 log() {
-  # Si la salida NO es una terminal, eliminar códigos de color
+  local msg="$1"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+  # Si la salida es una terminal, mostrar con colores
   if [ -t 1 ]; then
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo -e "[$timestamp] $msg" | tee -a "$LOG_FILE"
   else
-    # Eliminar códigos de color para el log
-    local clean_msg=$(echo -e "$1" | sed -E 's/\x1b\[[0-9;]*m//g')
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $clean_msg" | tee -a "$LOG_FILE"
+    # Si no es terminal (log file), eliminar códigos ANSI
+    local clean_msg=$(echo -e "$msg" | sed -E 's/\x1b\[[0-9;]*m//g')
+    echo "[$timestamp] $clean_msg" | tee -a "$LOG_FILE"
   fi
-}
-
-log_time() {
-  local vm_name="$1"
-  local orig_size="$2"
-  local comp_size="$3"
-  local duration="$4"
-  local ratio="$5"
-  local speed="$6"
-  local backup_date="$7"
-
-  local formatted_time=$(format_time_decimal "$duration")
-
-  echo "VM: $vm_name | Backup: $backup_date | Original: $orig_size | Comprimido: $comp_size | Ratio: ${ratio}x | Tiempo: ${formatted_time} | Velocidad: ${speed} MB/s" >>"$REPORT_FILE"
 }
 
 # ==============================================================================
@@ -296,18 +282,17 @@ compress_vmdk() {
   # PASO 4: Obtener TAMAÑO REAL EN DISCO (usando du -s)
   # ============================================================
   local blocks=$(du -s "$vmdk_file" 2>/dev/null | cut -f1)
-  local orig_bytes=$((blocks * 1024))
-
-  if [ -z "$orig_bytes" ] || [ "$orig_bytes" -eq 0 ]; then
+  if [ -z "$blocks" ] || [ "$blocks" -eq 0 ]; then
     log "  ❌ Archivo inválido o vacío"
     return 1
   fi
 
+  local orig_bytes=$((blocks * 1024))
   local orig_size_gb=$(echo "scale=2; $orig_bytes / 1024 / 1024 / 1024" | bc 2>/dev/null)
   [ -z "$orig_size_gb" ] && orig_size_gb="0.00"
 
   # Mostrar también el tamaño lógico para referencia
-  local logical_bytes=$(du -b "$vmdk_file" 2>/dev/null | cut -f1)
+  local logical_bytes=$(stat -c%s "$vmdk_file" 2>/dev/null)
   local logical_size_gb=$(echo "scale=2; $logical_bytes / 1024 / 1024 / 1024" | bc 2>/dev/null)
   [ -z "$logical_size_gb" ] && logical_size_gb="0.00"
 
@@ -354,9 +339,10 @@ compress_vmdk() {
       # ============================================================
       # PASO 9: Calcular métricas con TAMAÑO REAL
       # ============================================================
-      local comp_bytes=$(du -b "${vmdk_file}.tar.gz" 2>/dev/null | cut -f1)
-      [ -z "$comp_bytes" ] && comp_bytes=0
+      local comp_blocks=$(du -s "${vmdk_file}.tar.gz" 2>/dev/null | cut -f1)
+      [ -z "$comp_blocks" ] && comp_blocks=0
 
+      local comp_bytes=$((comp_blocks * 1024))
       local comp_size_gb=$(echo "scale=2; $comp_bytes / 1024 / 1024 / 1024" | bc 2>/dev/null)
       [ -z "$comp_size_gb" ] && comp_size_gb="0.00"
 
@@ -378,8 +364,6 @@ compress_vmdk() {
       # PASO 10: Guardar en el reporte
       VM_REPORT["$vm_name"]="${vm_name}|${backup_date}|${orig_size_gb}|${comp_size_gb}|${ratio}|${speed}|${formatted_duration}"
 
-      log_time "$vm_name" "${orig_size_gb}GB" "${comp_size_gb}GB" "$duration" "$ratio" "$speed" "$backup_date"
-
       # PASO 11: ELIMINAR EL ORIGINAL
       rm -f "$vmdk_file"
       log "  🗑️  Original eliminado (liberados ${orig_size_gb} GB)"
@@ -399,87 +383,51 @@ compress_vmdk() {
 }
 
 # ==============================================================================
-# FUNCIÓN DE REPORTE
+# MOSTRAR RESUMEN FINAL
 # ==============================================================================
 
-generate_report() {
-  local report_file="$1"
-  local total_time="$2"
-  local total_processed="$3"
-  local total_success="$4"
-  local total_failed="$5"
+show_summary() {
+  local total_time="$1"
+  local total_processed="$2"
+  local total_success="$3"
+  local total_failed="$4"
+  local total_skipped="$5"
 
-  {
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "📊 REPORTE DE COMPRESIÓN DE VMDK"
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo ""
-    echo "📅 Fecha: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "📂 Directorio base: $BASE_DIR"
-    echo "⏱️  Tiempo total: $(format_time "$total_time")"
-    echo "📦 Archivos procesados: $total_processed"
-    echo "✅ Exitosos: $total_success"
-    echo "❌ Fallidos: $total_failed"
-    echo ""
+  log ""
+  log "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+  log "${GREEN}📊 RESUMEN FINAL${NC}"
+  log "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+  log "  📅 Fecha: $(date '+%Y-%m-%d %H:%M:%S')"
+  log "  📂 Directorio base: $BASE_DIR"
+  log "  ⏱️  Tiempo total: $(format_time "$total_time")"
+  log "  📦 Archivos procesados: $total_processed"
+  log "  ✅ Exitosos: $total_success"
+  log "  ❌ Fallidos: $total_failed"
+  log "  ⏭️  Saltados: $total_skipped"
 
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "📈 DETALLE POR MÁQUINA"
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo ""
-
-    local current_vm=""
+  if [ ${#VM_REPORT[@]} -gt 0 ]; then
+    log ""
+    log "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    log "${YELLOW}📈 DETALLE POR MÁQUINA${NC}"
+    log "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     for key in "${!VM_REPORT[@]}"; do
       IFS='|' read -r vm_name backup_date orig_size comp_size ratio speed duration <<<"${VM_REPORT[$key]}"
-
-      if [ "$current_vm" != "$vm_name" ]; then
-        [ -n "$current_vm" ] && echo ""
-        current_vm="$vm_name"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🖥️  MÁQUINA: $vm_name"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      fi
-
-      local ahorro=$(echo "scale=2; 100 - ($(echo "$comp_size" | sed 's/GB//') * 100 / $(echo "$orig_size" | sed 's/GB//'))" | bc 2>/dev/null)
-      [ -z "$ahorro" ] && ahorro="0"
-
-      echo ""
-      echo "  📁 Backup: $backup_date"
-      echo "  ├─ Tamaño original: $orig_size GB"
-      echo "  ├─ Tamaño comprimido: $comp_size GB"
-      echo "  ├─ Ratio de compresión: ${ratio}x"
-      echo "  ├─ Velocidad: ${speed} MB/s"
-      echo "  ├─ Tiempo: $duration"
-      echo "  └─ Ahorro de espacio: ${ahorro}%"
+      log ""
+      log "  🖥️  ${BLUE}$vm_name${NC}"
+      log "     📁 Backup: $backup_date"
+      log "     ├─ Original: $orig_size GB"
+      log "     ├─ Comprimido: $comp_size GB"
+      log "     ├─ Ratio: ${ratio}x"
+      log "     ├─ Velocidad: ${speed} MB/s"
+      log "     └─ Tiempo: $duration"
     done
+  fi
 
-    echo ""
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "📊 RESUMEN POR MÁQUINA"
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo ""
-
-    for key in "${!VM_REPORT[@]}"; do
-      IFS='|' read -r vm_name backup_date orig_size comp_size ratio speed duration <<<"${VM_REPORT[$key]}"
-
-      local ahorro=$(echo "scale=2; 100 - ($(echo "$comp_size" | sed 's/GB//') * 100 / $(echo "$orig_size" | sed 's/GB//'))" | bc 2>/dev/null)
-      [ -z "$ahorro" ] && ahorro="0"
-
-      echo "  🖥️  $vm_name"
-      echo "     └─ Último backup: $backup_date | Ratio: ${ratio}x | Ahorro: ${ahorro}%"
-    done
-
-    echo ""
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "📁 Archivos de log"
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "  📄 Log principal: $LOG_FILE"
-    echo "  📋 Este reporte: $report_file"
-    echo "═══════════════════════════════════════════════════════════════════════════════"
-
-  } >"$report_file"
-
-  cat "$report_file"
+  log ""
+  log "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+  log "📁 Log principal: $LOG_FILE"
+  log "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
 
 # ==============================================================================
@@ -542,10 +490,6 @@ main() {
   TOTAL_FAILED=0
   TOTAL_SKIPPED=0
 
-  echo "# VMDK Compression Report - $(date)" >"$REPORT_FILE"
-  echo "# Format: VM | Backup | Original | Comprimido | Ratio | Tiempo | Velocidad" >>"$REPORT_FILE"
-  echo "" >>"$REPORT_FILE"
-
   log "${GREEN}🚀 Iniciando compresión de VMDK${NC}"
   log "📂 Directorio base: $BASE_DIR"
   log "🧵 Hilos de compresión: $NPROC cores"
@@ -555,7 +499,7 @@ main() {
   log "📌 Verificación: pigz -t"
   log "📌 Detección de uso: 4 mediciones con 5s (15s total)"
   log ""
-  log "📋 Reporte se generará en: $REPORT_FILE"
+  log "📋 El resumen se mostrará al finalizar"
   log ""
 
   find "$BASE_DIR" -type f -name "*-flat.vmdk" ! -name "*.gz" ! -name "*.tar.gz" 2>/dev/null | while IFS= read -r vmdk; do
@@ -583,15 +527,15 @@ main() {
   local total_duration=$(echo "$end_total - $start_total" | bc 2>/dev/null)
   [ -z "$total_duration" ] && total_duration=0
 
-  generate_report "$REPORT_FILE" "$total_duration" "$TOTAL_PROCESSED" "$TOTAL_SUCCESS" "$TOTAL_FAILED"
+  # Mostrar resumen (sin reporte separado)
+  show_summary "$total_duration" "$TOTAL_PROCESSED" "$TOTAL_SUCCESS" "$TOTAL_FAILED" "$TOTAL_SKIPPED"
 
   if [ "$TOTAL_FAILED" -gt 0 ]; then
-    log "${YELLOW}⚠️  $TOTAL_FAILED archivos fallaron. Revisa el reporte: $REPORT_FILE${NC}"
+    log "${YELLOW}⚠️  $TOTAL_FAILED archivos fallaron. Revisa el log: $LOG_FILE${NC}"
     return 1
   else
     log "${GREEN}✅ Todos los archivos procesados exitosamente${NC}"
-    log "📋 Reporte generado: $REPORT_FILE"
-    log "⏭️  Archivos saltados (en uso o ya comprimidos): $TOTAL_SKIPPED"
+    log "📋 Log completo en: $LOG_FILE"
     return 0
   fi
 }
